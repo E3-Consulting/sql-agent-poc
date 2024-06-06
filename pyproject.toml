@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "sales-agent"
+version = "0.1.0"
+description = "Agent for Allec Marketplace"
+authors = ["Marco Nardone <28734811+majinmarco@users.noreply.github.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+google-auth = "^2.29.0"
+python-dotenv = "^1.0.1"
+streamlit = "^1.35.0"
+langchain-core = "^0.2.4"
+langchain = "^0.2.2"
+langchain-community = "^0.2.3"
+langchain-google-vertexai = "^1.0.5"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

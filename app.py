@@ -12,8 +12,6 @@ from langchain_community.agent_toolkits.sql.toolkit import SQLDatabaseToolkit
 from langchain.prompts import PromptTemplate
 from langchain.pydantic_v1 import BaseModel, Field
 from langchain_google_vertexai.llms import VertexAI
-from langchain_google_vertexai.model_garden import ChatAnthropicVertex
-from langchain_openai import ChatOpenAI
 import json
 
 import os
