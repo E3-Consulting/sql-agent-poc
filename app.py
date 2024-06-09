@@ -3,146 +3,33 @@ from dotenv import load_dotenv
 import streamlit as st
 from langchain_core.globals import set_verbose
 from langchain.sql_database import SQLDatabase
-from langchain.tools import StructuredTool
 from langchain.agents import create_sql_agent
 from langchain.agents.agent_types import AgentType
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_community.utilities.sql_database import SQLDatabase
-from langchain_community.agent_toolkits.sql.toolkit import SQLDatabaseToolkit
 from langchain.prompts import PromptTemplate
-from langchain.pydantic_v1 import BaseModel, Field
 from langchain_google_vertexai.llms import VertexAI
-import json
-
+from langchain_core.output_parsers import JsonOutputParser
+from custom_sql import CustomSQLDatabaseToolkit
+import pandas as pd
 import os
 
-CREDENTIALS, PROJECT_ID = google.auth.default()
-
 set_verbose(True)
+
+CREDENTIALS, PROJECT_ID = google.auth.default()
 
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
 os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGSMITH_API_KEY")
 
-# TODO: refine code to make it more efficiend
+st.set_page_config(page_title="Sales Agent", page_icon=":mortar_board:")
+st.logo("allec_logo.webp")
+
+st.title("Marketplace Agent")
+
+load_dotenv()
+
+# TODO: refine code to make it more efficient
 def agent_init(db: SQLDatabase, model):
-    sql_tools = SQLDatabaseToolkit(db=db, llm=model)
-
-    # Define Plotting Tool
-    ## Plotting tool parameters
-    class PlotParams(BaseModel):
-        """Parameters for generating a plot."""
-        params: str =  Field(default=None, description="""String of a json with the following schema:
-                            {
-                                "title": "PlotParams",
-                                "type": "object",
-                                "properties": {
-                                    "x": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "number"
-                                    },
-                                    "description": "This field represents the data points for the x-axis of the plot."
-                                    },
-                                    "y": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "number"
-                                    },
-                                    "description": "This field represents the data points for the y-axis of the plot."
-                                    },
-                                    "title": {
-                                    "type": "string",
-                                    "description": "This field represents the title of the plot.",
-                                    "default": null
-                                    },
-                                    "xlabel": {
-                                    "type": "string",
-                                    "description": "This field represents the label for the x-axis of the plot.",
-                                    "default": null
-                                    },
-                                    "ylabel": {
-                                    "type": "string",
-                                    "description": "This field represents the label for the y-axis of the plot.",
-                                    "default": null
-                                    },
-                                    "plotkind": {
-                                    "type": "string",
-                                    "description": "This field represents the kind of plot that will be generated.",
-                                    "default": null
-                                    }
-                                },
-                                "required": ["x", "y"]
-                            }""")
-
-    ## Plotting tool
-    def generate_plot(params: PlotParams) -> str:
-        """Generate a plot with the given parameters"""
-        from matplotlib import pyplot as plt
-
-        params = json.loads(params.params)
-
-        #         ## Database Schema- use this information to not waste time querying the database more than you should.
-        # CREATE TABLE IF NOT EXISTS Suppliers (
-        # supplier_id INT AUTO_INCREMENT PRIMARY KEY,
-        # name VARCHAR(255) NOT NULL
-        # );
-        # CREATE TABLE IF NOT EXISTS Categories (
-        # category_id INT AUTO_INCREMENT PRIMARY KEY,
-        # name VARCHAR(255) NOT NULL
-        # );
-        # CREATE TABLE IF NOT EXISTS Items (
-        # item_id INT AUTO_INCREMENT PRIMARY KEY,
-        # name VARCHAR(255) NOT NULL,
-        # supplier_id INT,
-        # category_id INT,
-        # supplier_item_number VARCHAR(255),
-        # universal_product_code VARCHAR(255),
-        # unit_of_measure VARCHAR(50),
-        # packing VARCHAR(50),
-        # units FLOAT,
-        # unit_price FLOAT,
-        # total_packing_price FLOAT,
-        # brand TEXT,
-        # description TEXT,
-        # FOREIGN KEY (supplier_id) REFERENCES Suppliers(supplier_id),
-        # FOREIGN KEY (category_id) REFERENCES Categories(category_id)
-        # );
-        # CREATE TABLE IF NOT EXISTS Clients (
-        # client_id INT AUTO_INCREMENT PRIMARY KEY,
-        # name VARCHAR(255) NOT NULL,
-        # company_type VARCHAR(100),
-        # contact_info TEXT
-        # );
-        # CREATE TABLE IF NOT EXISTS Orders (
-        # order_id INT AUTO_INCREMENT PRIMARY KEY,
-        # client_id INT,
-        # order_date DATE,
-        # FOREIGN KEY (client_id) REFERENCES Clients(client_id)
-        # );
-        # CREATE TABLE IF NOT EXISTS OrderItems (
-        # order_item_id INT AUTO_INCREMENT PRIMARY KEY,
-        # order_id INT,
-        # item_id INT,
-        # quantity INT,
-        # price_at_order FLOAT,
-        # FOREIGN KEY (order_id) REFERENCES Orders(order_id),
-        # FOREIGN KEY (item_id) REFERENCES Items(item_id)
-        # );
-
-        plt.figure()
-        plt.plot(params.x, params.y, kind = params.plotkind)
-        plt.title(params.title)
-        plt.xlabel(params.xlabel)
-        plt.ylabel(params.ylabel)
-        plt.savefig('plot.png')
-        return "Plot saved as plot.png"
-
-    plot_tool = StructuredTool.from_function(
-        func=generate_plot,
-        name="generate_plot",
-        schema=PlotParams
-    )
-
     # TODO- safety to not allow it to filter other suppliers
     prompt_template = PromptTemplate(
     input_variables=["input", "agent_scratchpad", "tools", "tool_names", "supplier", "chat_history"],
@@ -151,10 +38,76 @@ def agent_init(db: SQLDatabase, model):
         ## Instructions
         You are a helpful, friendly assistant for a client of an app called Allec. Allec is a marketplace for suppliers to sell their items. Their own clients can use Allec to purchase items. 
         Your task is to answer to the user's requests by using the following tools: {tools}
-        You will be interacting with a user that works for a certain supplier. Address the user in second person. The supplier you are interacting with is {supplier}. You must filter the database based on the supplier. The supplier names should be formatted in initial case in the database.
+        You will be interacting with a user that works for a certain supplier. Address the user in second person. The supplier you are interacting with is {supplier}. You must filter the database based on the supplier.
+        If the query includes a request to plot, ignore it. This is beyond your capabilities.
+        Finally, some details in the database may be written in spanish, however it must be noted that: **many columns will not be direct translations, list the values of column that is needed before making these assumptions**. Try to account for this as best as possible when constructing your queries.
 
         ## Output Specification
-        Provide an informative, analytical, and accurate answer to the question based on your query results. Since you have to be analytical, provide extra detail. Do not include code block markers in your action input (e.g., ```sql ```, [SQL: ], etc.). 'Action' should only contain the name of the tool to be used.
+        Provide an informative, analytical, and accurate answer to the question based on your query results. Once you have a final answer, stop the thought process and provide your output after "Final Answer:". However, if you are stuck in a loop trying to find an answer to no avail, respond with "I do not have enough information to answer that".
+        If you get None as a query result, respond with "There is no data available to answer that".
+
+        ### Extra specifications:
+        Do not include code block markers in your action input (e.g., ```sql ```, [SQL: ], etc.). 'Action' should only contain the name of the tool to be used.
+
+        ## STOP CONDITION:
+        Once a sql query is executed that returns a result that answers the question, return the final Thought and Final Answer.
+
+    # Database Table Descriptions:
+        * Categories- the names and ids of Categories that respond to the Items.
+        * Clients- the names, ids, and company_types of Clients that respond to the Orders.
+        * Items- information that responds to the items of all suppliers.
+        * Suppliers- ids and names of Suppliers.
+        * Orders- the date and ids of Orders, in addition to the client id associated with each.
+        * OrderItems- for each order id, the items, qty, and price at order.
+
+        ## Database Schema- use this information to understand the structure of the database.
+            CREATE TABLE IF NOT EXISTS Suppliers (
+            supplier_id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(255) NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS Categories (
+            category_id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(255) NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS Items (
+            item_id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            supplier_id INT,
+            category_id INT,
+            supplier_item_number VARCHAR(255),
+            universal_product_code VARCHAR(255),
+            unit_of_measure VARCHAR(50),
+            packing VARCHAR(50),
+            units FLOAT,
+            unit_price FLOAT,
+            total_packing_price FLOAT,
+            brand TEXT,
+            description TEXT,
+            FOREIGN KEY (supplier_id) REFERENCES Suppliers(supplier_id),
+            FOREIGN KEY (category_id) REFERENCES Categories(category_id)
+            );
+            CREATE TABLE IF NOT EXISTS Clients (
+            client_id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            company_type VARCHAR(100),
+            contact_info TEXT
+            );
+            CREATE TABLE IF NOT EXISTS Orders (
+            order_id INT AUTO_INCREMENT PRIMARY KEY,
+            client_id INT,
+            order_date DATE,
+            FOREIGN KEY (client_id) REFERENCES Clients(client_id)
+            );
+            CREATE TABLE IF NOT EXISTS OrderItems (
+            order_item_id INT AUTO_INCREMENT PRIMARY KEY,
+            order_id INT,
+            item_id INT,
+            quantity INT,
+            price_at_order FLOAT,
+            FOREIGN KEY (order_id) REFERENCES Orders(order_id),
+            FOREIGN KEY (item_id) REFERENCES Items(item_id)
+            );
+        
 
     # Thought Process
         ## Structure
@@ -164,17 +117,12 @@ def agent_init(db: SQLDatabase, model):
         Action: What tool should be utilized from the following: {tool_names}
         Action Input: Code or query to be executed in the desired tool
         Observation: Document the results of the action
-        (Repeat Thought/Action/Observation as needed until you arrive at an adequate response for the user)
-        Thought: I have gathered enough information to answer the question
-        Final Answer: Provide your final answer here, using the information from your observations
+        (Repeat Thought/Action/Observation until you arrive at an adequate sql query result that answers the user's question)
+        Thought: The result of the executed query answers the user's query
+        Final Answer: Natural language conversion of the result of the executed query
 
         ## Examples
             ### Example 1- Human: Show me all the items that we supply.
-
-            Thought: I need to list the tables to verify that the "Suppliers" table exists and contains the relevant data.
-            Action: list_sql_database_tool
-            Action Input: "Suppliers, Items"
-            Observation: Both "Suppliers" and "Items" tables exist in the database.
 
             Thought: I need to get the schema and sample rows from the "Suppliers" table to understand its structure and verify the supplier's name.
             Action: info_sql_database_tool
@@ -199,11 +147,6 @@ def agent_init(db: SQLDatabase, model):
 
 
             ### Example 2- Human: What categories of items to we sell?
-
-            Thought: I need to ensure the necessary tables are present.
-            Action: list_sql_database_tool
-            Action Input: "Suppliers, Items, Categories"
-            Observation: The tables "Suppliers", "Items", and "Categories" exist in the database.
 
             Thought: Get the schema and sample rows from the "Suppliers" table to confirm the supplier's name.
             Action: info_sql_database_tool
@@ -236,11 +179,6 @@ def agent_init(db: SQLDatabase, model):
             2. Stationery
             
             ### Example 3- Human: List all clients who placed orders in the last month.
-            
-            Thought: First, ensure the "Orders" and "Clients" tables exist.
-            Action: list_sql_database_tool
-            Action Input: "Orders, Clients"
-            Observation: The "Orders" and "Clients" tables exist in the database.
 
             Thought: Get the schema and sample rows from the "Orders" table to understand its structure and verify the date format.
             Action: info_sql_database_tool
@@ -285,17 +223,218 @@ def agent_init(db: SQLDatabase, model):
     # Create the agent
     agent = create_sql_agent(
     llm=model,
-    extra_tools=[plot_tool],
+    toolkit = CustomSQLDatabaseToolkit(db = db, llm = model),
     prompt=prompt_template,
     agent_type= AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-    agent_executor_kwargs={"handle_parsing_errors":"Check you output and make sure it conforms! Do not output an action and a final answer at the same time."},
-    db=db,
     verbose=True
     )
 
     return agent
 
+def query_asks_for_plotting(text: str) -> bool:
+    instructions = """
+    You will be receiving a question from a user below. Your task is to check if the question includes a request to plot data. Only respond with "Yes" or "No".
+    If the response contains "Agent stopped due to iteration limit or time limit.", repond with "No".
+    
+    Question: {text}
+    """
 
+    response = st.session_state["llm"].invoke(instructions.format(text=text)) 
+    print(response)
+
+    if "Yes" in response:
+        return True
+    else:
+        return False
+
+def llm_plotter(user_query: str, response: str):
+    prompt =("""
+            In the end of this prompt, there are two values: user query and response. The user query is a request to retrieve and plot data. The response is the retrieved data in natural language.
+            We want to convert the retrieved data into a JSON format. Further, based on the user query, we want to plot as requested. If the request is vague, we want to assume the best fit from the retrieved data.
+            There are four types of plots: table, bar, line, and histogram.
+
+            ---
+            For the following query, if it requires drawing a table, reply as follows:
+            {"table": {"columns": ["column1", "column2", ...], "data": [[value1, value2, ...], [value1, value2, ...], ...]}}
+
+            If the query requires creating a bar chart, reply as follows:
+            {"bar": {"columns": ["A", "B", "C", ...], "data": [25, 24, 10, ...], "metadata": {"title": "Table Title", "xlabel": "X Label", "ylabel": "Y Label"}}
+
+            If the query requires creating a line chart, reply as follows:
+            {"line": {"columns": ["A", "B", "C", ...], "data": [25, 24, 10, ...], "metadata": {"title": "Table Title", "xlabel": "X Label", "ylabel": "Y Label"}}
+
+            If the query requires creating a histogram, reply as follows:
+            {"histogram": {"column": ["A"], "data": [25, 24, 10, ...]}, "metadata": {"title": "Table Title", "xlabel": "X Label", "ylabel": "Y Label"}}
+
+            Return all output as a string.
+
+            All strings in "columns" list and data list, should be in double quotes,
+
+            For example: {"columns": ["title", "ratings_count"], "data": [["Gilead", 361], ["Spider's Web", 5164]]}
+
+            ---
+            Do not respond with backticks. For example, instead of responding like this:
+             
+             ```json {"bar": {"columns": ["\"Unius Olive Oil Arbequina 750ml\"", "\"Olive Oil Casanova Estates \\\"L\'Olio Toscano\\\" 2020 500ml\"", "\"Pic colomini d'Aragona Ex tra Virgin Olive Oil 2020 500ml\"", "\"Sol del Silenc io Premium Oil 500ml\"", "\"Ume Juice (Can) - Pack of 30 8.45oz\"", "\"Mik an Juice (Can) - Pack of 30 8.45oz\"", "\"Apple Juice (Can) - Pac k of 30 8.45oz\"", "\"Ume Juice - Pack of 24 8.45oz\"", "\"The 1 Water / Wine Glass (No Stem) - 6 Unit Presentation Gift Pack\"", "\"Mik an Juice - Pack of 24 8.45oz\"", "\"Apple Juice - Pac k of 24 8.45oz\"", "\"Deep Sea Water - Pack of 6 2L\"", "\"Young Wine Decanter\"", "\"Deep Sea Water - Pack of 24 17.5oz\"", "\"Polis hing Cloth\"", "\"Water Carafe (Pre-Order Only)\"", "\"Mature Wine Decanter\"", "\"Water / Wine Glass (Pre-Order Only)\"", "\"The 1 Glass - 2 Unit Presentation Gift Pack\"", "\"The 1 Glass\""], "data": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], "metadata": {"title": "Top Selling Items by Revenue", "xlabel": "Item Name", "ylabel": "Revenue"}}} ```
+
+            Respond like this:
+
+            {"bar": {"columns": ["\"Unius Olive Oil Arbequina 750ml\"", "\"Olive Oil Casanova Estates \\\"L\'Olio Toscano\\\" 2020 500ml\"", "\"Pic colomini d'Aragona Ex tra Virgin Olive Oil 2020 500ml\"", "\"Sol del Silenc io Premium Oil 500ml\"", "\"Ume Juice (Can) - Pack of 30 8.45oz\"", "\"Mik an Juice (Can) - Pack of 30 8.45oz\"", "\"Apple Juice (Can) - Pac k of 30 8.45oz\"", "\"Ume Juice - Pack of 24 8.45oz\"", "\"The 1 Water / Wine Glass (No Stem) - 6 Unit Presentation Gift Pack\"", "\"Mik an Juice - Pack of 24 8.45oz\"", "\"Apple Juice - Pac k of 24 8.45oz\"", "\"Deep Sea Water - Pack of 6 2L\"", "\"Young Wine Decanter\"", "\"Deep Sea Water - Pack of 24 17.5oz\"", "\"Polis hing Cloth\"", "\"Water Carafe (Pre-Order Only)\"", "\"Mature Wine Decanter\"", "\"Water / Wine Glass (Pre-Order Only)\"", "\"The 1 Glass - 2 Unit Presentation Gift Pack\"", "\"The 1 Glass\""], "data": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], "metadata": {"title": "Top Selling Items by Revenue", "xlabel": "Item Name", "ylabel": "Revenue"}}}
+            ---
+
+            Lets think step by step.
+
+            User query: 
+            """ + user_query +
+            """
+            
+            Response: 
+            """ + response)
+
+    parser = JsonOutputParser()
+    agent = st.session_state["llm"] | parser
+
+    response_dict = agent.invoke(prompt)
+    print(response_dict)
+
+    # Check if the response is a bar chart.
+    try:
+        if "bar" in response_dict:
+            data = response_dict["bar"]
+            df = pd.DataFrame(data)
+            df.set_index("columns", inplace=True)
+            st.bar_chart(df)
+
+            # Add title and labels
+            st.title(response["metadata"]["title"])
+            st.xlabel(response["metadata"]["xlabel"])
+            st.ylabel(response["metadata"]["ylabel"])
+
+        # Check if the response is a line chart.
+        if "line" in response_dict:
+            data = response_dict["line"]
+            df = pd.DataFrame(data)
+            df.set_index("columns", inplace=True)
+            st.line_chart(df)
+
+            # Add title and labels
+            st.title(response["metadata"]["title"])
+            st.xlabel(response["metadata"]["xlabel"])
+            st.ylabel(response["metadata"]["ylabel"])
+
+        # Check if the response is a histogram.
+        if "histogram" in response_dict:
+            data = response_dict["histogram"]
+            df = pd.DataFrame(data)
+            df.set_index("column", inplace=True)
+            st.hist(df)
+
+            # Add title and labels
+            st.title(response["metadata"]["title"])
+            st.xlabel(response["metadata"]["xlabel"])
+            st.ylabel(response["metadata"]["ylabel"])
+
+        # Check if the response is a table.
+        if "table" in response_dict:
+            data = response_dict["table"]
+            df = pd.DataFrame(data["data"], columns=data["columns"])
+            st.table(df)
+    except:
+        st.error("Plot creation unsuccessful.", icon = "🚨")
+
+def improve_user_query(user_query: str) -> str:
+    # ---
+    # # Important Information for Context:
+    # ## Database Table Descriptions:
+    #     * Categories- the names and ids of Categories that respond to the Items.
+    #     * Clients- the names, ids, and company_types of Clients that respond to the Orders.
+    #     * Items- information that responds to the items of all suppliers.
+    #     * Suppliers- ids and names of Suppliers.
+    #     * Orders- the date and ids of Orders, in addition to the client id associated with each.
+    #     * OrderItems- for each order id, the items, qty, and price at order.
+    # ## Database Schema:
+    #     CREATE TABLE IF NOT EXISTS Suppliers (
+    #     supplier_id INT AUTO_INCREMENT PRIMARY KEY,
+    #     name VARCHAR(255) NOT NULL
+    #     );
+    #     CREATE TABLE IF NOT EXISTS Categories (
+    #     category_id INT AUTO_INCREMENT PRIMARY KEY,
+    #     name VARCHAR(255) NOT NULL
+    #     );
+    #     CREATE TABLE IF NOT EXISTS Items (
+    #     item_id INT AUTO_INCREMENT PRIMARY KEY,
+    #     name VARCHAR(255) NOT NULL,
+    #     supplier_id INT,
+    #     category_id INT,
+    #     supplier_item_number VARCHAR(255),
+    #     universal_product_code VARCHAR(255),
+    #     unit_of_measure VARCHAR(50),
+    #     packing VARCHAR(50),
+    #     units FLOAT,
+    #     unit_price FLOAT,
+    #     total_packing_price FLOAT,
+    #     brand TEXT,
+    #     description TEXT,
+    #     FOREIGN KEY (supplier_id) REFERENCES Suppliers(supplier_id),
+    #     FOREIGN KEY (category_id) REFERENCES Categories(category_id)
+    #     );
+    #     CREATE TABLE IF NOT EXISTS Clients (
+    #     client_id INT AUTO_INCREMENT PRIMARY KEY,
+    #     name VARCHAR(255) NOT NULL,
+    #     company_type VARCHAR(100),
+    #     contact_info TEXT
+    #     );
+    #     CREATE TABLE IF NOT EXISTS Orders (
+    #     order_id INT AUTO_INCREMENT PRIMARY KEY,
+    #     client_id INT,
+    #     order_date DATE,
+    #     FOREIGN KEY (client_id) REFERENCES Clients(client_id)
+    #     );
+    #     CREATE TABLE IF NOT EXISTS OrderItems (
+    #     order_item_id INT AUTO_INCREMENT PRIMARY KEY,
+    #     order_id INT,
+    #     item_id INT,
+    #     quantity INT,
+    #     price_at_order FLOAT,
+    #     FOREIGN KEY (order_id) REFERENCES Orders(order_id),
+    #     FOREIGN KEY (item_id) REFERENCES Items(item_id)
+    #     # );
+    # ---
+
+    instructions = ("""
+    Regenerate the user query as best you can, if needed, so that it can be interpreted as best as possible by an llm. Make it more specific and clear. 
+    Expand on the user query if needed. For example, if plotting the data seems necessary, change the response as such. 
+    Or, if the user query is not clear, make it clearer. Or in another case, if it is too complex, simplify it. The goal is to have the query result in an insightful answer.
+    Keep the response short and to the point, and only reply with the regenerated version of the user query. 
+                    
+    # Important Information for Context:
+    ## Database Table Descriptions:
+        * Categories- the names and ids of Categories that respond to the Items.
+        * Clients- the names, ids, and company_types of Clients that respond to the Orders.
+        * Items- information that responds to the items of all suppliers.
+        * Suppliers- ids and names of Suppliers.
+        * Orders- the date and ids of Orders, in addition to the client id associated with each.
+        * OrderItems- for each order id, the items, qty, and price at order.
+
+    Example #1:
+        User Query: What are the top selling items? Plot them.
+        Response: What are our top selling items? Plot them by revenue.
+                    
+    Example #2:
+        User Query: What clients have ordered the most items?
+        Response: What clients have ordered the most items? Include each client's number of items ordered, the total revenue, and the average revenue per order.
+                    
+    Example #3:
+        User Query: What is the revenue by order categories?
+        Response: What is the revenue per order category? Plot them on a bar chart.
+
+    User Query: 
+    """ + user_query)
+
+    improved_query = st.session_state["llm"].invoke(instructions)
+    print(improved_query)
+
+    return improved_query
 
 def init_db(user: str, password: str, host: str, port: str, database: str) -> SQLDatabase:
     db_uri = f"mysql+mysqlconnector://{user}:{password}@{host}:{port}/{database}"
@@ -305,13 +444,6 @@ if "chat_history" not in st.session_state:
     st.session_state["chat_history"] = [
         AIMessage(content="Hello! I am your Allec Marketplace Agent. How can I help you today?")
     ]
-
-load_dotenv()
-
-st.set_page_config(page_title="Sales Agent", page_icon=":mortar_board:")
-st.logo("allec_logo.webp")
-
-st.title("Marketplace Agent")
 
 with st.sidebar:
     st.subheader("Login")
@@ -352,11 +484,11 @@ with st.sidebar:
     if st.button("Login"):
         with st.spinner("Connecting to database..."):
             db = init_db(
-                "root",
-                "",
-                "localhost",
+                "marco",
+                "marco1234",
+                "34.148.197.141",
                 "3306",
-                "allecmarketplacesample",
+                "allecmarketplace",
             )
 
             st.session_state["db"] = db
@@ -364,8 +496,10 @@ with st.sidebar:
             with st.spinner("Establishing connections..."):
                 if "llm" not in st.session_state:
                     # st.session_state["llm"] = ChatAnthropicVertex(name="claude-3-opus@20240229", temperature=0, streaming=False)
-                    st.session_state["llm"] = VertexAI(model_name="gemini-1.5-flash-001", temperature=0)
-                    # st.session_state["llm"] = ChatOpenAI(model = "gpt-4o", temperature=0)
+
+                    st.session_state["llm"] = VertexAI(model_name="gemini-1.5-flash-001", temperature=0.0)
+                    startup_response = st.session_state["llm"].invoke("This invocation is to assure faster responses!")
+
                 if "agent" not in st.session_state:
                     st.session_state["agent"] = agent_init(
                         db=st.session_state["db"], 
@@ -383,15 +517,20 @@ for message in st.session_state["chat_history"]:
         with st.chat_message("Human"):
             st.markdown(message.content)
 
-
 if user_query is not None and user_query.strip() != "":
+    improved_user_query = improve_user_query(user_query)
+
     st.session_state["chat_history"].append(HumanMessage(content=user_query))
     with st.chat_message("Human"):
         st.markdown(user_query)
 
     with st.chat_message("AI"):
         with st.spinner("Fetching answer..."):
-            response = st.session_state["agent"].invoke({"input":user_query, "supplier":st.session_state["supplier"], "chat_history":st.session_state["chat_history"]})
+            response = st.session_state["agent"].invoke({"input":improved_user_query, "supplier":st.session_state["supplier"], "chat_history":st.session_state["chat_history"]})
             st.markdown(response["output"])
+
+        if query_asks_for_plotting(improved_user_query):
+            with st.spinner("Generating plot..."):
+                llm_plotter(improved_user_query, response["output"])
 
     st.session_state["chat_history"].append(AIMessage(content=response["output"]))

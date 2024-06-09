@@ -58,10 +58,8 @@ Happy coding!
 
 2. Then, follow the "Configure ADC with your Google Account" guide here- https://cloud.google.com/docs/authentication/provide-credentials-adc 
 
-3. Copy `application-default-credentials.json` to current directory.
-
-4. In .env file make sure to have this line: 
+3. In .env file make sure to have this line: 
 
 ```
-GOOGLE_APPLICATION_CREDENTIALS="application_default_credentials.json"
+GOOGLE_APPLICATION_CREDENTIALS="path/to/file/directory/application_default_credentials.json"
 ```
