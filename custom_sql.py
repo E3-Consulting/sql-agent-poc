@@ -35,7 +35,7 @@ class CustomSQLDatabaseToolkit(BaseToolkit):
         info_sql_database_tool_description = (
             "Input to this tool is a comma-separated list of tables, output is the "
             "schema and sample rows for those tables. "
-            "Be sure that the tables actually exist bedfore calling "
+            "Be sure that the tables actually exist before calling "
             "Example Input: table1, table2, table3"
         )
         info_sql_database_tool = InfoSQLDatabaseTool(
