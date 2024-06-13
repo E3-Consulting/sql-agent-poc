@@ -1,7 +1,6 @@
 import google.auth
 from dotenv import load_dotenv
 import streamlit as st
-from streamlit.delta_generator import DeltaGenerator # plot dtype
 from langchain_core.globals import set_verbose
 from langchain.sql_database import SQLDatabase
 from langchain.agents import create_sql_agent
@@ -13,7 +12,8 @@ from langchain_google_vertexai.llms import VertexAI
 from langchain_core.output_parsers import JsonOutputParser
 from custom_sql import CustomSQLDatabaseToolkit
 import pandas as pd
-import json
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 import os
 
 set_verbose(True)
@@ -24,9 +24,13 @@ os.environ["LANGCHAIN_TRACING_V2"] = "true"
 os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGSMITH_API_KEY")
 
 st.set_page_config(page_title="Sales Agent", page_icon=":mortar_board:")
-st.logo("allec_logo.webp")
+st.logo("Allec-New-Logo-M-Icon.png")
 
-st.title("Marketplace Agent")
+col1, col2 = st.columns([1, 3])
+with col1:
+    st.image("allec_logo.webp", width=150, output_format="PNG", use_column_width=True)
+with col2:
+    st.title("Marketplace Agent")
 
 load_dotenv()
 
@@ -41,7 +45,7 @@ def agent_init(db: SQLDatabase, model):
         You are a helpful, friendly assistant for a client of an app called Allec. Allec is a marketplace for suppliers to sell their items.
         Your task is to answer to the user's requests by using the following tools: {tools}
         The supplier you are interacting with is {supplier}. Its id in the table is {supplier_id}. You must filter the database based on the name of the supplier as it appared in the previous sentence in every query.
-        If the query includes a request to plot, ignore it.
+        If the query only includes a request to plot data, say "Plotted data coming up!".
         Finally, some details in the database may be written in spanish, however it must be noted that: **many columns will not be direct translations, list the values of column that is needed before making these assumptions**.
 
         ## Output Specification
@@ -227,7 +231,8 @@ def agent_init(db: SQLDatabase, model):
     toolkit = CustomSQLDatabaseToolkit(db = db, llm = model),
     prompt=prompt_template,
     agent_type= AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-    verbose=True
+    verbose=True,
+    handle_parsing_errors=True
     )
 
     return agent
@@ -265,7 +270,7 @@ def llm_plotter(user_query: str, response: str):
 
             Example Response:
              
-            ```json {"bar": {"columns": ["Items", "Revenue"], "data": [["\"Unius Olive Oil Arbequina 750ml\"", "\"Olive Oil Casanova Estates \\\"L\'Olio Toscano\\\" 2020 500ml\"", "\"Pic colomini d'Aragona Ex tra Virgin Olive Oil 2020 500ml\"", "\"Sol del Silenc io Premium Oil 500ml\"", "\"Ume Juice (Can) - Pack of 30 8.45oz\"", "\"Mik an Juice (Can) - Pack of 30 8.45oz\"", "\"Apple Juice (Can) - Pac k of 30 8.45oz\"", "\"Ume Juice - Pack of 24 8.45oz\"", "\"The 1 Water / Wine Glass (No Stem) - 6 Unit Presentation Gift Pack\"", "\"Mik an Juice - Pack of 24 8.45oz\"", "\"Apple Juice - Pac k of 24 8.45oz\"", "\"Deep Sea Water - Pack of 6 2L\"", "\"Young Wine Decanter\"", "\"Deep Sea Water - Pack of 24 17.5oz\"", "\"Polis hing Cloth\"", "\"Water Carafe (Pre-Order Only)\"", "\"Mature Wine Decanter\"", "\"Water / Wine Glass (Pre-Order Only)\"", "\"The 1 Glass - 2 Unit Presentation Gift Pack\"", "\"The 1 Glass\""], [97.98,25.12,66.07,16.39,66.06,1.33,77.58,33.37,25.49,76.2,92.45,43.17,60.93,64.13,72.45,57.05,4.14,11.11,47.49,23.33 ]]}, "metadata": {"title": "Top Selling Items by Revenue", "xlabel": "Item Name", "ylabel": "Revenue"}} ```
+            ```json {"bar": {'columns': ['Item Name', 'Revenue'], 'data': [['"Unius Olive Oil Arbequina 750ml"', 26827.5], ['"Olive Oil Casanova Estates "L\'Olio Toscano" 2020 500ml"', 24575.0], ['"Pic colomini d\'Aragona Ex tra Virgin Olive Oil 2020 500ml"', 22348.75], ['"Sol del Silenc io Premium Oil 500ml"', 20250.0], ['"Ume Juice (Can) - Pack of 30 8.45oz"', 18317.5], ['"Mik an Juice (Can) - Pack of 30 8.45oz"', 16460.0], ['"Apple Juice (Can) - Pac k of 30 8.45oz"', 14643.75], ['"Ume Juice - Pack of 24 8.45oz"', 12950.0], ['"The 1 Water / Wine Glass (No Stem) - 6 Unit Presentation Gift Pack"', 12901.00048828125], ['"Mik an Juice - Pack of 24 8.45oz"', 11407.5], ['"Apple Juice - Pac k of 24 8.45oz"', 9945.0], ['"Deep Sea Water - Pack of 6 2L"', 9888.75], ['"Young Wine Decanter"', 7940.199890136719], ['"Deep Sea Water - Pack of 24 17.5oz"', 7610.0], ['"Polis hing Cloth"', 7297.5], ['"Water Carafe (Pre-Order Only)"', 6533.75], ['"Mature Wine Decanter"', 5807.790008544922], ['"Water / Wine Glass (Pre-Order Only)"', 5430.0], ['"The 1 Glass - 2 Unit Presentation Gift Pack"', 2985.6500244140625], ['"The 1 Glass"', 2497.0999755859375]]}, 'metadata': {'title': 'Revenue of Each Item', 'xlabel': 'Item Name', 'ylabel': 'Revenue'}} ```
             
             ---
 
@@ -283,7 +288,7 @@ def llm_plotter(user_query: str, response: str):
 
             Return all output as a string.
 
-            All strings in "columns" list and data list, should be in double quotes,
+            All strings in "columns" list, data list, and metadata, should be in double quotes,
 
             For example: {"columns": ["title", "ratings_count"], "data": [["Gilead", 361], ["Spider's Web", 5164]]}
 
@@ -307,53 +312,49 @@ def llm_plotter(user_query: str, response: str):
 
     return response_dict
 
-def generate_plot(response_dict):
-    # Check if the response is a bar chart.
-    try:
+def generate_plot(response_dict: dict) -> None:
+    try:  # TODO- solve bug. Gets into try but goes straight to except.
+        # Check if the response is a bar chart.
         if "bar" in response_dict:
-            metadata = response_dict["metadata"]
+            print("Processing bar chart data...")
             data = response_dict["bar"]
+            print("Bar data:", data)
+
+            if "metadata" not in response_dict:
+                print("Metadata key not found in bar data")
+            else:
+                metadata = response_dict["metadata"]
+                print("Metadata:", metadata)
+
             df = pd.DataFrame(data["data"], columns=data["columns"])
-            print(df)
+            print("DataFrame:", df)
+
             # Add title and labels
             st.title(metadata["title"])
-            st.bar_chart(data = df, x = metadata['xlabel'], y = metadata['ylabel'])
-
-            # st.xlabel(metadata["xlabel"])
-            # st.ylabel(metadata["ylabel"])
+            st.bar_chart(data=df, x=metadata['xlabel'], y=metadata['ylabel'])
 
         # Check if the response is a line chart.
         if "line" in response_dict:
+            print("Processing line chart data...")
             metadata = response_dict["metadata"]
             data = response_dict["line"]
             df = pd.DataFrame(data["data"], columns=data["columns"])
+            print("Line DataFrame:", df)
             # Add title and labels
             st.title(metadata["title"])
-            st.bar_chart(data = df, x = metadata['xlabel'], y = metadata['ylabel'])
-
-            # st.xlabel(metadata["xlabel"])
-            # st.ylabel(metadata["ylabel"])
-
-        # Check if the response is a histogram.
-        # if "histogram" in response_dict:
-        #     metadata = response_dict["metadata"]
-        #     data = response_dict["histogram"]
-        #     df = pd.DataFrame(data["data"], columns=data["columns"])
-        #     # Add title and labels
-        #     st.title(metadata["title"])
-        #     st.plotly_chart
-        #     st.hist(data = df, x = metadata['xlabel'], y = metadata['ylabel'])
-
-        #     # st.xlabel(metadata["xlabel"])
-        #     # st.ylabel(metadata["ylabel"])
+            st.line_chart(data=df, x=metadata['xlabel'], y=metadata['ylabel'])
 
         # Check if the response is a table.
         if "table" in response_dict:
+            print("Processing table data...")
             data = response_dict["table"]
             df = pd.DataFrame(data["data"], columns=data["columns"])
+            print("Table DataFrame:", df)
             st.table(df)
-    except:
-        st.error("Plot creation unsuccessful.", icon = "🚨")
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        st.error("Plot creation unsuccessful.", icon="🚨")
 
 def improve_user_query(user_query: str) -> str:
     instructions = ("""
@@ -382,7 +383,11 @@ def improve_user_query(user_query: str) -> str:
                     
     Example #3:
         User Query: What is the revenue by order categories?
-        Response: What is the revenue per order category? Plot them on a bar chart.
+        Response: What is the revenue per order category?
+                    
+    # Chat History for context of query:
+    """ + str(st.session_state["chat_history"])) + (
+    """
 
     User Query: 
     """ + user_query)
@@ -393,7 +398,7 @@ def improve_user_query(user_query: str) -> str:
     return improved_query
 
 def init_db(user: str, password: str, host: str, port: str, database: str) -> SQLDatabase:
-    db_uri = f"mysql+mysqlconnector://{user}:{password}@{host}:{port}/{database}"
+    db_uri = f"mysql://{user}:{password}@{host}:{port}/{database}"
     return SQLDatabase.from_uri(db_uri)
 
 if "chat_history" not in st.session_state:
@@ -448,6 +453,9 @@ with st.sidebar:
             )
 
             st.session_state["db"] = db
+            st.session_state["engine"] = create_engine("mysql://marco:marco1234@34.148.197.141:3306/allecmarketplace") 
+            Session = sessionmaker(bind = st.session_state["engine"])
+            st.session_state["session"] = Session()
 
             with st.spinner("Establishing connections..."):
                 if "llm" not in st.session_state:
@@ -462,6 +470,8 @@ with st.sidebar:
                         model=st.session_state["llm"])
 
             st.success("Connected to Marketplace!")
+    
+
 
 suppliers = {
     "AMBROSIA": 1,
@@ -558,23 +568,23 @@ user_query =st.chat_input("Type query...")
 
 for message in st.session_state["chat_history"]:
     if isinstance(message, AIMessage):
-        with st.chat_message("AI"):
+        with st.chat_message("AI", avatar="🤖"):
             st.markdown(message.content)
     elif isinstance(message, HumanMessage):
-        with st.chat_message("Human"):
+        with st.chat_message("Human", avatar = "👨‍💻"):
             st.markdown(message.content)
     elif isinstance(message, dict):
-        with st.chat_message("AI"):
+        with st.chat_message("AI", avatar="📊"):
             generate_plot(message)
 
 if user_query is not None and user_query.strip() != "":
     improved_user_query = improve_user_query(user_query)
 
     st.session_state["chat_history"].append(HumanMessage(content=user_query))
-    with st.chat_message("Human"):
+    with st.chat_message("Human", avatar = "👨‍💻"):
         st.markdown(user_query)
 
-    with st.chat_message("AI"):
+    with st.chat_message("AI", avatar="🤖"):
         with st.spinner("Fetching answer..."):
             response = st.session_state["agent"].invoke({"input":improved_user_query, "supplier":st.session_state["supplier"], "supplier_id":suppliers[st.session_state["supplier"]], "chat_history":st.session_state["chat_history"]})
             # Retry
@@ -587,14 +597,15 @@ if user_query is not None and user_query.strip() != "":
             if response["output"] != "Agent stopped due to iteration limit or time limit.":
                 st.markdown(response["output"])
 
-        if query_asks_for_plotting(improved_user_query):
-            with st.chat_message("AI"):
-                with st.spinner("Generating plot..."):
-                    plot = llm_plotter(improved_user_query, response["output"])
-                    generate_plot(plot)
-                    st.session_state["plot"] = True
-        else:
-            st.session_state["plot"] = False
+    if query_asks_for_plotting(improved_user_query):
+        with st.chat_message("AI", avatar="📊"):
+            with st.spinner("Generating plot..."):
+                plot = llm_plotter(improved_user_query, response["output"])
+                print(plot)
+                generate_plot(response_dict=plot)
+                st.session_state["plot"] = True
+    else:
+        st.session_state["plot"] = False
 
 
     st.session_state["chat_history"].append(AIMessage(content=response["output"]))
