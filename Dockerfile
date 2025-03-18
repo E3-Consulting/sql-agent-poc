@@ -11,7 +11,6 @@ ENV GCP_PROJECT="genai-413518"
 ENV GCLOUD_PROJECT="genai-413518"
 ENV GOOGLE_APPLICATION_CREDENTIALS="application_default_credentials.json"
 ENV LANGSMITH_API_KEY="ls__b6dedf8d49ae42f0a5d96bd8b4149dd8"
-ENV OPENAI_API_KEY="sk-proj-pXEndLTsst7LwTEkJRP7T3BlbkFJg66ZZ8tzdGk83fv8smuP"
 
 # Install system packages
 RUN apt-get update && apt-get install -yq \
