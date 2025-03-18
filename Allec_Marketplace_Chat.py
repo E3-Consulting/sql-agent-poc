@@ -34,27 +34,39 @@ with col2:
 
 load_dotenv()
 
+
 # TODO: refine code to make it more efficient
 def agent_init(db: SQLDatabase, model):
+    print(db.table_info)
     # TODO- safety to not allow it to filter other suppliers
     prompt_template = PromptTemplate(
-    input_variables=["input", "agent_scratchpad", "tools", "tool_names", "supplier", "supplier_id", "chat_history"],
-    template="""
+        input_variables=[
+            "input",
+            "agent_scratchpad",
+            "tools",
+            "tool_names",
+            "supplier",
+            "supplier_id",
+            "chat_history",
+        ],
+        template="""
     # Requirements
         ## Instructions
         You are a helpful, friendly assistant for a client of an app called Allec. Allec is a marketplace for suppliers to sell their items.
         Your task is to answer to the user's requests by using the following tools: {tools}
         The supplier you are interacting with is {supplier}. Its id in the table is {supplier_id}. You must filter the database based on the name of the supplier as it appared in the previous sentence in every query.
         If a query returns no data after checking it with the tools, respond with "There is no data available to answer that".
-        If the query only includes a request to plot data, say "Plotted data coming up!".
         Finally, some details in the database may be written in spanish, however it must be noted that: **many columns will not be direct translations, list the values of column that is needed before making these assumptions**.
 
         ## Output Specification
         Provide an informative, and accurate answer to the question based on your query results. Once you have a final answer, stop the thought process and provide your output after "Final Answer:".
         If you get None as a query result, respond with "There is no data available to answer that". Include all information from your final query in your natural language answer.
+        If the query includes a request to plot data, append "Plotted data coming up!" to the end of the final answer after three new lines.
+        If the query is a follow-up to plot data of the results of a previous query, simply respond "Plotted data coming up!" and don't use any tools.
+        Try to format your response as a table if it makes sense.
 
         ### Extra specifications:
-        Do not include code block markers in your action input (e.g., ```sql ```, [SQL: ], etc.). 'Action' should only contain the name of the tool to be used.
+        Do not include code block markers in your action input (e.g., ```sql ```, [SQL: ], etc.). 'Action' should only contain the name of the tool to be used. The database is in MySQL.
 
         ## STOP CONDITION:
         Once a sql query is executed that returns a result that answers the question, return the Final Answer.
@@ -67,53 +79,10 @@ def agent_init(db: SQLDatabase, model):
         * Orders- the date and ids of Orders, in addition to the client id associated with each.
         * OrderItems- for each order id, the items, qty, and price at order.
 
-        ## Database Schema- use this information to understand the structure of the database.
-            CREATE TABLE `Suppliers` (
-            supplier_id INT AUTO_INCREMENT PRIMARY KEY,
-            name VARCHAR(255) NOT NULL
-            );
-            CREATE TABLE `Categories` (
-            category_id INT AUTO_INCREMENT PRIMARY KEY,
-            name VARCHAR(255) NOT NULL
-            );
-            CREATE TABLE `Items` (
-            item_id INT AUTO_INCREMENT PRIMARY KEY,
-            name VARCHAR(255) NOT NULL,
-            supplier_id INT,
-            category_id INT,
-            supplier_item_number VARCHAR(255),
-            universal_product_code VARCHAR(255),
-            unit_of_measure VARCHAR(50),
-            packing VARCHAR(50),
-            units FLOAT,
-            unit_price FLOAT,
-            total_packing_price FLOAT,
-            brand TEXT,
-            description TEXT,
-            FOREIGN KEY (supplier_id) REFERENCES Suppliers(supplier_id),
-            FOREIGN KEY (category_id) REFERENCES Categories(category_id)
-            );
-            CREATE TABLE `Clients` (
-            client_id INT AUTO_INCREMENT PRIMARY KEY,
-            name VARCHAR(255) NOT NULL,
-            company_type VARCHAR(100),
-            contact_info TEXT
-            );
-            CREATE TABLE `Orders` (
-            order_id INT AUTO_INCREMENT PRIMARY KEY,
-            client_id INT,
-            order_date DATE,
-            FOREIGN KEY (client_id) REFERENCES Clients(client_id)
-            );
-            CREATE TABLE `OrderItems` (
-            order_item_id INT AUTO_INCREMENT PRIMARY KEY,
-            order_id INT,
-            item_id INT,
-            quantity INT,
-            price_at_order FLOAT,
-            FOREIGN KEY (order_id) REFERENCES Orders(order_id),
-            FOREIGN KEY (item_id) REFERENCES Items(item_id)
-            );
+        ## Database Schema- use this information to understand the structure of the database. 
+            """
+        + db.table_info
+        + """
 
     # Thought Process
         ## Structure
@@ -224,19 +193,21 @@ def agent_init(db: SQLDatabase, model):
 
     # Your thought process and answer
     {agent_scratchpad}
-    """)
+    """,
+    )
 
     # Create the agent
     agent = create_sql_agent(
-    llm=model,
-    toolkit = CustomSQLDatabaseToolkit(db = db, llm = model),
-    prompt=prompt_template,
-    agent_type= AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-    verbose=True,
-    handle_parsing_errors=True
+        llm=model,
+        toolkit=CustomSQLDatabaseToolkit(db=db, llm=model),
+        prompt=prompt_template,
+        agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+        verbose=True,
+        handle_parsing_errors=True,
     )
 
     return agent
+
 
 def query_asks_for_plotting(text: str) -> bool:
     instructions = """
@@ -246,7 +217,7 @@ def query_asks_for_plotting(text: str) -> bool:
     Question: {text}
     """
 
-    response = st.session_state["llm"].invoke(instructions.format(text=text)) 
+    response = st.session_state["llm"].invoke(instructions.format(text=text))
     print(response)
 
     if "Yes" in response:
@@ -254,15 +225,16 @@ def query_asks_for_plotting(text: str) -> bool:
     else:
         return False
 
-def llm_plotter(user_query: str, response: str):
 
+def llm_plotter(user_query: str, response: str):
     # DO NOT RESPOND WITH BACKTICKS (i.e., ```json ... ```).
-            
+
     #         Instead of responding like this:
     # Respond like this:
 
     #         {"bar": {"columns": ["Items", "Revenue"], "data": [["\"Unius Olive Oil Arbequina 750ml\"", "\"Olive Oil Casanova Estates \\\"L\'Olio Toscano\\\" 2020 500ml\"", "\"Pic colomini d'Aragona Ex tra Virgin Olive Oil 2020 500ml\"", "\"Sol del Silenc io Premium Oil 500ml\"", "\"Ume Juice (Can) - Pack of 30 8.45oz\"", "\"Mik an Juice (Can) - Pack of 30 8.45oz\"", "\"Apple Juice (Can) - Pac k of 30 8.45oz\"", "\"Ume Juice - Pack of 24 8.45oz\"", "\"The 1 Water / Wine Glass (No Stem) - 6 Unit Presentation Gift Pack\"", "\"Mik an Juice - Pack of 24 8.45oz\"", "\"Apple Juice - Pac k of 24 8.45oz\"", "\"Deep Sea Water - Pack of 6 2L\"", "\"Young Wine Decanter\"", "\"Deep Sea Water - Pack of 24 17.5oz\"", "\"Polis hing Cloth\"", "\"Water Carafe (Pre-Order Only)\"", "\"Mature Wine Decanter\"", "\"Water / Wine Glass (Pre-Order Only)\"", "\"The 1 Glass - 2 Unit Presentation Gift Pack\"", "\"The 1 Glass\""], [97.98,25.12,66.07,16.39,66.06,1.33,77.58,33.37,25.49,76.2,92.45,43.17,60.93,64.13,72.45,57.05,4.14,11.11,47.49,23.33 ]]}, "metadata": {"title": "Top Selling Items by Revenue", "xlabel": "Item Name", "ylabel": "Revenue"}}
-    prompt =("""
+    prompt = (
+        """
             In the end of this prompt, there are two values: user query and result. The user query is a request to retrieve and plot data. The result is the retrieved data in natural language.
             We want to convert the retrieved data into a JSON format. Further, based on the user query, we want to plot as requested. If the request is vague, we want to assume the best fit from the retrieved data.
             The user query would be best to indicate what the column names are. For example, if the user asks for the top selling items, the column would be "Item Name" and "Quantity sold" or "Item Name" and "Revenue", depending on what the user specifies. However, if the user is not specific, feel free to guess for yourself based on the result value.
@@ -279,32 +251,34 @@ def llm_plotter(user_query: str, response: str):
             {"table": {"columns": ["column1", "column2", ...], "data": [[value1, value2, ...], [value1, value2, ...], ...]}}
 
             If the query requires creating a bar chart, reply as follows:
-            {"bar": {"columns": ["A", "B", "C", ...], "data": [[value1, value2, ...], [value1, value2, ...], ...]}, "metadata": {"title": "Table Title", "xlabel": "X Label", "ylabel": "Y Label"}}
+            {"bar": {"columns": ["A", "B", "C", ...], "data": [[value1, value2, ...], [value1, value2, ...], ...]}, "metadata": {"title": "Table Title", "xlabel": "A", "ylabel": "B"}}
 
             If the query requires creating a line chart, reply as follows:
-            {"line": {"columns": ["A", "B", "C", ...], "data": [[value1, value2, ...], [value1, value2, ...], ...]}, "metadata": {"title": "Table Title", "xlabel": "X Label", "ylabel": "Y Label"}}
+            {"line": {"columns": ["A", "B", "C", ...], "data": [[value1, value2, ...], [value1, value2, ...], ...]}, "metadata": {"title": "Table Title", "xlabel": "A", "ylabel": "B"}}
 
             If the query requires creating a histogram, reply as follows:
             {"histogram": {"columns": ["A"], "data": [25, 24, 10, ...]}, "metadata": {"title": "Table Title", "xlabel": "X Label", "ylabel": "Y Label"}}
 
             Return all output as a string.
 
-            All strings in "columns" list, data list, and metadata, should be in double quotes,
-
-            For example: {"columns": ["title", "ratings_count"], "data": [["Gilead", 361], ["Spider's Web", 5164]]}
-
             ---
 
             User query: 
-            """ + user_query +
             """
+        + user_query
+        + """
             
             Result: 
-            """ + response)
+            """
+        + response
+    )
 
     parser = JsonOutputParser()
-    agent = st.session_state["llm"] | parser
-    response_dict = agent.invoke(prompt) 
+
+    # response_format_checker =
+
+    agent = st.session_state["llm"] | (lambda x: x.replace("\n", "")) | parser
+    response_dict = agent.invoke(prompt)
     print(response_dict)
 
     # print(response_dict["bar"]['columns'])
@@ -313,18 +287,22 @@ def llm_plotter(user_query: str, response: str):
 
     return response_dict
 
+
 def generate_plot(response_dict: dict) -> None:
-    try:  # TODO- solve bug. Gets into try but goes straight to except.
+    try:
         # Check if the response is a bar chart.
         if "bar" in response_dict:
             print("Processing bar chart data...")
             data = response_dict["bar"]
             print("Bar data:", data)
 
-            if "metadata" not in response_dict:
+            if "metadata" not in response_dict and "metadata" not in data:
                 print("Metadata key not found in bar data")
             else:
-                metadata = response_dict["metadata"]
+                try:
+                    metadata = data["metadata"]
+                except:
+                    metadata = response_dict["metadata"]
                 print("Metadata:", metadata)
 
             df = pd.DataFrame(data["data"], columns=data["columns"])
@@ -332,18 +310,23 @@ def generate_plot(response_dict: dict) -> None:
 
             # Add title and labels
             st.title(metadata["title"])
-            st.bar_chart(data=df, x=metadata['xlabel'], y=metadata['ylabel'])
+            st.bar_chart(data=df, x=metadata["xlabel"], y=metadata["ylabel"])
 
         # Check if the response is a line chart.
         if "line" in response_dict:
             print("Processing line chart data...")
-            metadata = response_dict["metadata"]
             data = response_dict["line"]
+
+            try:
+                metadata = data["metadata"]
+            except:
+                metadata = response_dict["metadata"]
+
             df = pd.DataFrame(data["data"], columns=data["columns"])
             print("Line DataFrame:", df)
             # Add title and labels
             st.title(metadata["title"])
-            st.line_chart(data=df, x=metadata['xlabel'], y=metadata['ylabel'])
+            st.line_chart(data=df, x=metadata["xlabel"], y=metadata["ylabel"])
 
         # Check if the response is a table.
         if "table" in response_dict:
@@ -357,8 +340,10 @@ def generate_plot(response_dict: dict) -> None:
         print(f"An error occurred: {e}")
         st.error("Plot creation unsuccessful.", icon="🚨")
 
+
 def improve_user_query(user_query: str) -> str:
-    instructions = ("""
+    instructions = (
+        """
     Regenerate the user query as best you can, if needed, so that it can be interpreted as best as possible by an llm. Make it more specific and clear. 
     Expand on the user query if needed. For example, if plotting the data seems necessary, change the response as such. 
     Or, if the user query is not clear, make it clearer. Or in another case, if it is too complex, simplify it. The goal is to have the query result in an insightful answer.
@@ -387,59 +372,133 @@ def improve_user_query(user_query: str) -> str:
         Response: What is the revenue per order category?
                     
     # Chat History for context of query:
-    """ + str(st.session_state["chat_history"])) + (
     """
+        + str(st.session_state["chat_history"])
+    ) + (
+        """
 
     User Query: 
-    """ + user_query)
+    """
+        + user_query
+    )
 
     improved_query = st.session_state["llm"].invoke(instructions)
     print(improved_query)
 
     return improved_query
 
-def init_db(user: str, password: str, host: str, port: str, database: str) -> SQLDatabase:
+
+def init_db(
+    user: str, password: str, host: str, port: str, database: str
+) -> SQLDatabase:
     db_uri = f"mysql://{user}:{password}@{host}:{port}/{database}"
     return SQLDatabase.from_uri(db_uri)
 
+
 if "chat_history" not in st.session_state:
     st.session_state["chat_history"] = [
-        AIMessage(content="Hello! I am your Allec Marketplace Agent. How can I help you today?")
+        AIMessage(
+            content="Hello! I am your Allec Marketplace Agent. How can I help you today?"
+        )
     ]
 
 with st.sidebar:
     st.subheader("Login")
     st.write("Hello! Enter your credentials to get started.")
-    
-    st.session_state["supplier"] = st.selectbox("Supplier", ['AMBROSIA', 'BALLESTER', 'CAJITA VALLEJO',
-       'CC1 BEER DISTRIBUTOR, INC.', 'FINE WINE IMPORTS',
-       'MENDEZ & COMPANY', 'OCEAN LAB BREWING CO',
-       'PAN AMERICAN WINE & SPIRITS', 'PUERTO RICO SUPPLIES GROUP',
-       'QUINTANA HERMANOS', 'SEA WORLD', 'SERRALLES', 'V. SUAREZ',
-       'JOSE SANTIAGO', 'ASIA MARKET', 'B. FERNANDEZ & HNOS. INC.',
-       'CARIBE COMPOSTABLES', 'DON PINA', 'DROUYN', 'KIKUET', 'LA CEBA',
-       'LEODI', 'MAVE INC', 'MAYS OCHOA', 'NORTHWESTERN SELECTA',
-       'PACKERS', 'PROGRESSIVE', 'QUALITY CLEANING PRODUCTS', 'TO RICO',
-       'ULINE', 'BAGUETTES DE PR', 'BESPOKE', 'CAIMÁN',
-       'CARDONA AGRO INDUSTRY', 'CHURRO LOOP', 'COMEX', 'DONA LOLA',
-       'GFG', 'HL HERNANDEZ', 'IMPERIAL DADE', 'INPROMO', 'JUGOS HENRY',
-       'Northwestern Selecta', 'PAPELERIA', 'PLAZA CELLARS',
-       'PR SUPPLIES', 'TACONAZO', 'WEBSTAURANT STORE',
-       'COCA-COLA PUERTO RICO BOTTLES', 'CR - DISTRIBUTIONS BALLESTER',
-       'CR - DISTRIBUTIONS BE WAFFLED', 'CR - DISTRIBUTIONS GREEN VALLEY',
-       'DADE PAPER', 'EL VIANDON', 'FRIGORIFICO', 'GBS',
-       'NATURAL FOOD CENTER', 'VAQUERIA TRES MONJITAS', 'YC DEPOT',
-       'BIO-WARE', 'BLESS PRODUCE', 'ELABORACION DE PASTELILLOS',
-       'FINCA CAMAILA', 'FINCA LAHAM', 'HIDROPONICO LOS HERMANOS',
-       'JESÚS CUEVAS', 'JUGOS LA BORINQUEÑA', 'LEVAIN',
-       'LIQUIDACIONES FELICIANO', 'MEDALLA DISTRIBUTORS',
-       'MONDA QUE MONDA', 'MR. SPECIAL', 'NORIS UNIFORMS- AGUADILLA',
-       'PASTA ASORE', 'PEREZ OFFICE', 'PLATANO  HIO',
-       "POPEYE'S ICE FACTORY", 'PR VERDE FOOD DISTRIBUITOR',
-       'PRODUCTOS DON GADY', 'PRODUCTOS EL PLANTILLERO',
-       'PRODUCTOS MI ENCANTO', 'QUESO DEL PAÍS LA ESPERANZA',
-       'RINCÓN RUM INC', 'TU PLÁTANO', 'VITIN', 'WESTERN PAPER', 'WAHMEY',
-       'Luxo Wine'])
+
+    st.session_state["supplier"] = st.selectbox(
+        "Supplier",
+        [
+            "AMBROSIA",
+            "BALLESTER",
+            "CAJITA VALLEJO",
+            "CC1 BEER DISTRIBUTOR, INC.",
+            "FINE WINE IMPORTS",
+            "MENDEZ & COMPANY",
+            "OCEAN LAB BREWING CO",
+            "PAN AMERICAN WINE & SPIRITS",
+            "PUERTO RICO SUPPLIES GROUP",
+            "QUINTANA HERMANOS",
+            "SEA WORLD",
+            "SERRALLES",
+            "V. SUAREZ",
+            "JOSE SANTIAGO",
+            "ASIA MARKET",
+            "B. FERNANDEZ & HNOS. INC.",
+            "CARIBE COMPOSTABLES",
+            "DON PINA",
+            "DROUYN",
+            "KIKUET",
+            "LA CEBA",
+            "LEODI",
+            "MAVE INC",
+            "MAYS OCHOA",
+            "NORTHWESTERN SELECTA",
+            "PACKERS",
+            "PROGRESSIVE",
+            "QUALITY CLEANING PRODUCTS",
+            "TO RICO",
+            "ULINE",
+            "BAGUETTES DE PR",
+            "BESPOKE",
+            "CAIMÁN",
+            "CARDONA AGRO INDUSTRY",
+            "CHURRO LOOP",
+            "COMEX",
+            "DONA LOLA",
+            "GFG",
+            "HL HERNANDEZ",
+            "IMPERIAL DADE",
+            "INPROMO",
+            "JUGOS HENRY",
+            "Northwestern Selecta",
+            "PAPELERIA",
+            "PLAZA CELLARS",
+            "PR SUPPLIES",
+            "TACONAZO",
+            "WEBSTAURANT STORE",
+            "COCA-COLA PUERTO RICO BOTTLES",
+            "CR - DISTRIBUTIONS BALLESTER",
+            "CR - DISTRIBUTIONS BE WAFFLED",
+            "CR - DISTRIBUTIONS GREEN VALLEY",
+            "DADE PAPER",
+            "EL VIANDON",
+            "FRIGORIFICO",
+            "GBS",
+            "NATURAL FOOD CENTER",
+            "VAQUERIA TRES MONJITAS",
+            "YC DEPOT",
+            "BIO-WARE",
+            "BLESS PRODUCE",
+            "ELABORACION DE PASTELILLOS",
+            "FINCA CAMAILA",
+            "FINCA LAHAM",
+            "HIDROPONICO LOS HERMANOS",
+            "JESÚS CUEVAS",
+            "JUGOS LA BORINQUEÑA",
+            "LEVAIN",
+            "LIQUIDACIONES FELICIANO",
+            "MEDALLA DISTRIBUTORS",
+            "MONDA QUE MONDA",
+            "MR. SPECIAL",
+            "NORIS UNIFORMS- AGUADILLA",
+            "PASTA ASORE",
+            "PEREZ OFFICE",
+            "PLATANO  HIO",
+            "POPEYE'S ICE FACTORY",
+            "PR VERDE FOOD DISTRIBUITOR",
+            "PRODUCTOS DON GADY",
+            "PRODUCTOS EL PLANTILLERO",
+            "PRODUCTOS MI ENCANTO",
+            "QUESO DEL PAÍS LA ESPERANZA",
+            "RINCÓN RUM INC",
+            "TU PLÁTANO",
+            "VITIN",
+            "WESTERN PAPER",
+            "WAHMEY",
+            "Luxo Wine",
+        ],
+    )
     st.text_input("Username", key="username")
     st.text_input("Password", type="password", key="password")
 
@@ -448,30 +507,35 @@ with st.sidebar:
             db = init_db(
                 "marco",
                 "marco1234",
-                "34.148.197.141",
+                "104.196.25.151",
                 "3306",
                 "allecmarketplace",
             )
 
             st.session_state["db"] = db
-            st.session_state["engine"] = create_engine("mysql://marco:marco1234@34.148.197.141:3306/allecmarketplace") 
-            Session = sessionmaker(bind = st.session_state["engine"])
+            st.session_state["engine"] = create_engine(
+                "mysql://marco:marco1234@104.196.25.151:3306/allecmarketplace"
+            )
+            Session = sessionmaker(bind=st.session_state["engine"])
             st.session_state["session"] = Session()
 
             with st.spinner("Establishing connections..."):
                 if "llm" not in st.session_state:
                     # st.session_state["llm"] = ChatAnthropicVertex(name="claude-3-opus@20240229", temperature=0, streaming=False)
 
-                    st.session_state["llm"] = VertexAI(model_name="gemini-1.5-flash-001", temperature=0.0)
-                    startup_response = st.session_state["llm"].invoke("This invocation is to establish an initial connection to the model!")
+                    st.session_state["llm"] = VertexAI(
+                        model_name="gemini-1.5-flash-001", temperature=0.0
+                    )
+                    startup_response = st.session_state["llm"].invoke(
+                        "This invocation is to establish an initial connection to the model!"
+                    )
 
                 if "agent" not in st.session_state:
                     st.session_state["agent"] = agent_init(
-                        db=st.session_state["db"], 
-                        model=st.session_state["llm"])
+                        db=st.session_state["db"], model=st.session_state["llm"]
+                    )
 
             st.success("Connected to Marketplace!")
-    
 
 
 suppliers = {
@@ -562,17 +626,17 @@ suppliers = {
     "VITIN": 85,
     "WESTERN PAPER": 86,
     "WAHMEY": 87,
-    "Luxo Wine": 88
+    "Luxo Wine": 88,
 }
 
-user_query =st.chat_input("Type query...")
+user_query = st.chat_input("Type query...")
 
 for message in st.session_state["chat_history"]:
     if isinstance(message, AIMessage):
         with st.chat_message("AI", avatar="🤖"):
             st.markdown(message.content)
     elif isinstance(message, HumanMessage):
-        with st.chat_message("Human", avatar = "👨‍💻"):
+        with st.chat_message("Human", avatar="👨‍💻"):
             st.markdown(message.content)
     elif isinstance(message, dict):
         with st.chat_message("AI", avatar="📊"):
@@ -582,20 +646,43 @@ if user_query is not None and user_query.strip() != "":
     improved_user_query = improve_user_query(user_query)
 
     st.session_state["chat_history"].append(HumanMessage(content=user_query))
-    with st.chat_message("Human", avatar = "👨‍💻"):
+    with st.chat_message("Human", avatar="👨‍💻"):
         st.markdown(user_query)
 
     with st.chat_message("AI", avatar="🤖"):
         with st.spinner("Fetching answer..."):
-            response = st.session_state["agent"].invoke({"input":improved_user_query, "supplier":st.session_state["supplier"], "supplier_id":suppliers[st.session_state["supplier"]], "chat_history":st.session_state["chat_history"]})
+            response = st.session_state["agent"].invoke(
+                {
+                    "input": improved_user_query,
+                    "supplier": st.session_state["supplier"],
+                    "supplier_id": suppliers[st.session_state["supplier"]],
+                    "chat_history": st.session_state["chat_history"],
+                }
+            )
             # Retry
-            if response["output"] == "Agent stopped due to iteration limit or time limit.":
+            if (
+                response["output"]
+                == "Agent stopped due to iteration limit or time limit."
+            ):
                 st.markdown("Failed first attempt to fetch answer. Retrying...")
-                response = st.session_state["agent"].invoke({"input":improved_user_query, "supplier":st.session_state["supplier"], "supplier_id":suppliers[st.session_state["supplier"]], "chat_history":st.session_state["chat_history"]})
-                if response["output"] == "Agent stopped due to iteration limit or time limit.":
+                response = st.session_state["agent"].invoke(
+                    {
+                        "input": improved_user_query,
+                        "supplier": st.session_state["supplier"],
+                        "supplier_id": suppliers[st.session_state["supplier"]],
+                        "chat_history": st.session_state["chat_history"],
+                    }
+                )
+                if (
+                    response["output"]
+                    == "Agent stopped due to iteration limit or time limit."
+                ):
                     st.error(response["output"])
             # success
-            if response["output"] != "Agent stopped due to iteration limit or time limit.":
+            if (
+                response["output"]
+                != "Agent stopped due to iteration limit or time limit."
+            ):
                 st.markdown(response["output"])
 
     if query_asks_for_plotting(improved_user_query):
@@ -607,7 +694,6 @@ if user_query is not None and user_query.strip() != "":
                 st.session_state["plot"] = True
     else:
         st.session_state["plot"] = False
-
 
     st.session_state["chat_history"].append(AIMessage(content=response["output"]))
 
